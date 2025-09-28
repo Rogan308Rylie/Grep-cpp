@@ -1,40 +1,50 @@
 #include <iostream>
 #include <string>
+#include <cctype>
 
-bool match_pattern(const std::string& input_line, const std::string& pattern) {
+using namespace std;
+
+bool match_pattern(const string& input_line, const string& pattern) {
     if (pattern.length() == 1) {
         return input_line.find(pattern) != std::string::npos;
     }
+    else if (pattern == "\\d") {
+        // Check if input contains any digit
+        for (char c : input_line) {
+            if (isdigit(c)) {
+                return true;
+            }
+        }
+        return false;
+    }
     else {
-        throw std::runtime_error("Unhandled pattern " + pattern);
+        throw runtime_error("Unhandled pattern " + pattern);
     }
 }
 
 int main(int argc, char* argv[]) {
-    // Flush after every std::cout / std::cerr
-    std::cout << std::unitbuf;
-    std::cerr << std::unitbuf;
+    // Flush after every cout / cerr
+    cout << unitbuf;
+    cerr << unitbuf;
 
     // You can use print statements as follows for debugging, they'll be visible when running tests.
-    std::cerr << "Logs from your program will appear here" << std::endl;
+    cerr << "Logs from your program will appear here" << endl;
 
     if (argc != 3) {
-        std::cerr << "Expected two arguments" << std::endl;
+        cerr << "Expected two arguments" << endl;
         return 1;
     }
 
-    std::string flag = argv[1];
-    std::string pattern = argv[2];
+    string flag = argv[1];
+    string pattern = argv[2];
 
     if (flag != "-E") {
-        std::cerr << "Expected first argument to be '-E'" << std::endl;
+        cerr << "Expected first argument to be '-E'" << endl;
         return 1;
     }
-
-    // Uncomment this block to pass the first stage
     
-    std::string input_line;
-    std::getline(std::cin, input_line);
+    string input_line;
+    getline(cin, input_line);
     
     try {
         if (match_pattern(input_line, pattern)) {
@@ -42,8 +52,8 @@ int main(int argc, char* argv[]) {
         } else {
             return 1;
         }
-    } catch (const std::runtime_error& e) {
-        std::cerr << e.what() << std::endl;
+    } catch (const runtime_error& e) {
+        cerr << e.what() << endl;
         return 1;
     }
 }
