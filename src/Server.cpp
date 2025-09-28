@@ -5,11 +5,15 @@
 
 using namespace std;
 
+// Forward declarations
+bool match_at_position_advanced(const string& input, int pos, const vector<struct PatternComponent>& components, int comp_idx, bool must_reach_end);
+
 // Represents a single pattern component
 struct PatternComponent {
-    enum Type { LITERAL, DIGIT, WORD, POSITIVE_CLASS, NEGATIVE_CLASS, START_ANCHOR, END_ANCHOR, DOT };
+    enum Type { LITERAL, DIGIT, WORD, POSITIVE_CLASS, NEGATIVE_CLASS, START_ANCHOR, END_ANCHOR, DOT, ALTERNATION };
     Type type;
     string value; // For literals and character classes
+    vector<vector<PatternComponent>> alternatives; // For alternation groups
     bool has_plus; // Whether this component has a + quantifier
     bool has_question; // Whether this component has a ? quantifier
     
@@ -33,6 +37,54 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
         } else if (pattern[i] == '.') {
             component = PatternComponent(PatternComponent::DOT);
             component_created = true;
+        } else if (pattern[i] == '(') {
+            // Handle alternation groups
+            int depth = 1;
+            int start = i + 1;
+            i++; // Move past opening paren
+            
+            while (i < pattern.length() && depth > 0) {
+                if (pattern[i] == '(') depth++;
+                else if (pattern[i] == ')') depth--;
+                i++;
+            }
+            
+            if (depth == 0) {
+                // Found matching closing paren
+                string group_content = pattern.substr(start, i - start - 1);
+                
+                // Split by | to get alternatives
+                vector<string> alt_strings;
+                string current_alt = "";
+                int paren_depth = 0;
+                
+                for (char c : group_content) {
+                    if (c == '(' ) paren_depth++;
+                    else if (c == ')') paren_depth--;
+                    else if (c == '|' && paren_depth == 0) {
+                        alt_strings.push_back(current_alt);
+                        current_alt = "";
+                        continue;
+                    }
+                    current_alt += c;
+                }
+                alt_strings.push_back(current_alt);
+                
+                // Parse each alternative
+                PatternComponent alt_component(PatternComponent::ALTERNATION);
+                for (const string& alt : alt_strings) {
+                    vector<PatternComponent> alt_pattern = parse_pattern(alt);
+                    alt_component.alternatives.push_back(alt_pattern);
+                }
+                
+                component = alt_component;
+                component_created = true;
+                i--; // Adjust since we'll increment at end of loop
+            } else {
+                // Unmatched paren, treat as literal
+                component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
+                component_created = true;
+            }
         } else if (pattern[i] == '\\' && i + 1 < pattern.length()) {
             char next = pattern[i + 1];
             if (next == 'd') {
@@ -119,8 +171,63 @@ bool matches_component(char c, const PatternComponent& component) {
             
         case PatternComponent::DOT:
             return true; // Dot matches any character
+            
+        case PatternComponent::ALTERNATION:
+            return false; // Alternations are handled differently in the main matching logic
     }
     return false;
+}
+
+// Helper function to match alternatives within alternation groups
+bool match_alternatives_at_position(const string& input, int pos, const vector<PatternComponent>& alt_components, int alt_idx, const vector<PatternComponent>& main_components, int main_idx, bool must_reach_end) {
+    if (alt_idx >= alt_components.size()) {
+        // Finished matching this alternative, continue with main pattern
+        return match_at_position_advanced(input, pos, main_components, main_idx, must_reach_end);
+    }
+    
+    if (pos >= input.length() && alt_idx < alt_components.size()) {
+        return false; // Ran out of input
+    }
+    
+    const PatternComponent& current = alt_components[alt_idx];
+    
+    if (current.has_plus) {
+        if (!matches_component(input[pos], current)) {
+            return false;
+        }
+        
+        for (int repeat_count = 1; pos + repeat_count <= input.length(); repeat_count++) {
+            bool all_match = true;
+            for (int j = 0; j < repeat_count; j++) {
+                if (!matches_component(input[pos + j], current)) {
+                    all_match = false;
+                    break;
+                }
+            }
+            
+            if (!all_match) {
+                return match_alternatives_at_position(input, pos + repeat_count - 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end);
+            }
+            
+            if (match_alternatives_at_position(input, pos + repeat_count, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end)) {
+                return true;
+            }
+        }
+        return false;
+    } else if (current.has_question) {
+        if (match_alternatives_at_position(input, pos, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end)) {
+            return true;
+        }
+        if (matches_component(input[pos], current)) {
+            return match_alternatives_at_position(input, pos + 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end);
+        }
+        return false;
+    } else {
+        if (matches_component(input[pos], current)) {
+            return match_alternatives_at_position(input, pos + 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end);
+        }
+        return false;
+    }
 }
 
 // Advanced pattern matching with quantifier support
@@ -135,7 +242,16 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
     
     const PatternComponent& current = components[comp_idx];
     
-    if (current.has_plus) {
+    if (current.type == PatternComponent::ALTERNATION) {
+        // Try each alternative
+        for (const auto& alternative : current.alternatives) {
+            // Try to match this alternative at current position
+            if (match_alternatives_at_position(input, pos, alternative, 0, components, comp_idx + 1, must_reach_end)) {
+                return true;
+            }
+        }
+        return false;
+    } else if (current.has_plus) {
         // Must match at least once, then try to match as many as possible
         if (!matches_component(input[pos], current)) {
             return false; // Doesn't match even once
