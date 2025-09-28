@@ -11,8 +11,9 @@ struct PatternComponent {
     Type type;
     string value; // For literals and character classes
     bool has_plus; // Whether this component has a + quantifier
+    bool has_question; // Whether this component has a ? quantifier
     
-    PatternComponent(Type t, string v = "", bool plus = false) : type(t), value(v), has_plus(plus) {}
+    PatternComponent(Type t, string v = "", bool plus = false, bool question = false) : type(t), value(v), has_plus(plus), has_question(question) {}
 };
 
 // Parse the pattern into components
@@ -66,10 +67,15 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
             component_created = true;
         }
         
-        // Check for + quantifier after the component
-        if (component_created && i + 1 < pattern.length() && pattern[i + 1] == '+') {
-            component.has_plus = true;
-            i++; // Skip the + character
+        // Check for quantifiers after the component
+        if (component_created && i + 1 < pattern.length()) {
+            if (pattern[i + 1] == '+') {
+                component.has_plus = true;
+                i++; // Skip the + character
+            } else if (pattern[i + 1] == '?') {
+                component.has_question = true;
+                i++; // Skip the ? character
+            }
         }
         
         if (component_created) {
@@ -149,6 +155,19 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
             if (match_at_position_advanced(input, pos + repeat_count, components, comp_idx + 1, must_reach_end)) {
                 return true;
             }
+        }
+        
+        return false;
+    } else if (current.has_question) {
+        // Can match zero or one time
+        // Try matching zero times first (skip this component)
+        if (match_at_position_advanced(input, pos, components, comp_idx + 1, must_reach_end)) {
+            return true;
+        }
+        
+        // Try matching one time
+        if (matches_component(input[pos], current)) {
+            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1, must_reach_end);
         }
         
         return false;
