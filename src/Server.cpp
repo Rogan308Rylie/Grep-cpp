@@ -7,7 +7,7 @@ using namespace std;
 
 // Represents a single pattern component
 struct PatternComponent {
-    enum Type { LITERAL, DIGIT, WORD, POSITIVE_CLASS, NEGATIVE_CLASS };
+    enum Type { LITERAL, DIGIT, WORD, POSITIVE_CLASS, NEGATIVE_CLASS, START_ANCHOR };
     Type type;
     string value; // For literals and character classes
     
@@ -19,7 +19,10 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
     vector<PatternComponent> components;
     
     for (int i = 0; i < pattern.length(); i++) {
-        if (pattern[i] == '\\' && i + 1 < pattern.length()) {
+        if (pattern[i] == '^') {
+            // Handle start anchor
+            components.push_back(PatternComponent(PatternComponent::START_ANCHOR));
+        } else if (pattern[i] == '\\' && i + 1 < pattern.length()) {
             // Handle escape sequences
             char next = pattern[i + 1];
             if (next == 'd') {
@@ -109,14 +112,23 @@ bool match_at_position(const string& input, int start_pos, const vector<PatternC
 bool match_pattern(const string& input_line, const string& pattern) {
     vector<PatternComponent> components = parse_pattern(pattern);
     
-    // Try matching at every position in the input
-    for (int i = 0; i <= (int)input_line.length() - (int)components.size(); i++) {
-        if (match_at_position(input_line, i, components)) {
-            return true;
-        }
-    }
+    // Check if pattern starts with start anchor
+    bool has_start_anchor = !components.empty() && components[0].type == PatternComponent::START_ANCHOR;
     
-    return false;
+    if (has_start_anchor) {
+        // If we have start anchor, only try matching from position 0
+        // Skip the start anchor component in matching
+        vector<PatternComponent> actual_pattern(components.begin() + 1, components.end());
+        return match_at_position(input_line, 0, actual_pattern);
+    } else {
+        // Try matching at every position in the input (original behavior)
+        for (int i = 0; i <= (int)input_line.length() - (int)components.size(); i++) {
+            if (match_at_position(input_line, i, components)) {
+                return true;
+            }
+        }
+        return false;
+    }
 }
 
 int main(int argc, char* argv[]) {
