@@ -237,7 +237,14 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
     }
     
     if (pos >= input.length()) {
-        return false; // Ran out of input
+        // Special case: if we ran out of input, check if remaining components are all optional
+        for (int remaining_idx = comp_idx; remaining_idx < components.size(); remaining_idx++) {
+            const PatternComponent& remaining = components[remaining_idx];
+            if (!remaining.has_question) {
+                return false; // Required component but no input left
+            }
+        }
+        return true; // All remaining components are optional
     }
     
     const PatternComponent& current = components[comp_idx];
@@ -327,7 +334,7 @@ bool match_pattern(const string& input_line, const string& pattern) {
         return match_at_position_advanced(input_line, 0, actual_pattern, 0, false);
     } else if (has_end_anchor) {
         // Must match at the end - try different starting positions but must consume to end
-        for (int start_pos = 0; start_pos <= input_line.length(); start_pos++) {
+        for (int start_pos = 0; start_pos <= (int)input_line.length() - (int)actual_pattern.size(); start_pos++) {
             if (match_at_position_advanced(input_line, start_pos, actual_pattern, 0, true)) {
                 return true;
             }
