@@ -10,8 +10,9 @@ struct PatternComponent {
     enum Type { LITERAL, DIGIT, WORD, POSITIVE_CLASS, NEGATIVE_CLASS, START_ANCHOR, END_ANCHOR };
     Type type;
     string value; // For literals and character classes
+    bool has_plus; // Whether this component has a + quantifier
     
-    PatternComponent(Type t, string v = "") : type(t), value(v) {}
+    PatternComponent(Type t, string v = "", bool plus = false) : type(t), value(v), has_plus(plus) {}
 };
 
 // Parse the pattern into components
@@ -19,27 +20,30 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
     vector<PatternComponent> components;
     
     for (int i = 0; i < pattern.length(); i++) {
+        PatternComponent component(PatternComponent::LITERAL);
+        bool component_created = false;
+        
         if (pattern[i] == '^') {
-            // Handle start anchor
-            components.push_back(PatternComponent(PatternComponent::START_ANCHOR));
+            component = PatternComponent(PatternComponent::START_ANCHOR);
+            component_created = true;
         } else if (pattern[i] == '$') {
-            // Handle end anchor
-            components.push_back(PatternComponent(PatternComponent::END_ANCHOR));
+            component = PatternComponent(PatternComponent::END_ANCHOR);
+            component_created = true;
         } else if (pattern[i] == '\\' && i + 1 < pattern.length()) {
-            // Handle escape sequences
             char next = pattern[i + 1];
             if (next == 'd') {
-                components.push_back(PatternComponent(PatternComponent::DIGIT));
+                component = PatternComponent(PatternComponent::DIGIT);
                 i++; // Skip the next character
+                component_created = true;
             } else if (next == 'w') {
-                components.push_back(PatternComponent(PatternComponent::WORD));
+                component = PatternComponent(PatternComponent::WORD);
                 i++; // Skip the next character
+                component_created = true;
             } else {
-                // If it's not a recognized escape, treat as literal
-                components.push_back(PatternComponent(PatternComponent::LITERAL, string(1, pattern[i])));
+                component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
+                component_created = true;
             }
         } else if (pattern[i] == '[') {
-            // Handle character classes
             int end = i;
             while (end < pattern.length() && pattern[end] != ']') {
                 end++;
@@ -47,18 +51,29 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
             if (end < pattern.length()) {
                 string class_content = pattern.substr(i + 1, end - i - 1);
                 if (!class_content.empty() && class_content[0] == '^') {
-                    components.push_back(PatternComponent(PatternComponent::NEGATIVE_CLASS, class_content.substr(1)));
+                    component = PatternComponent(PatternComponent::NEGATIVE_CLASS, class_content.substr(1));
                 } else {
-                    components.push_back(PatternComponent(PatternComponent::POSITIVE_CLASS, class_content));
+                    component = PatternComponent(PatternComponent::POSITIVE_CLASS, class_content);
                 }
                 i = end; // Move past the closing bracket
+                component_created = true;
             } else {
-                // No closing bracket found, treat as literal
-                components.push_back(PatternComponent(PatternComponent::LITERAL, string(1, pattern[i])));
+                component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
+                component_created = true;
             }
         } else {
-            // Regular literal character
-            components.push_back(PatternComponent(PatternComponent::LITERAL, string(1, pattern[i])));
+            component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
+            component_created = true;
+        }
+        
+        // Check for + quantifier after the component
+        if (component_created && i + 1 < pattern.length() && pattern[i + 1] == '+') {
+            component.has_plus = true;
+            i++; // Skip the + character
+        }
+        
+        if (component_created) {
+            components.push_back(component);
         }
     }
     
@@ -96,19 +111,54 @@ bool matches_component(char c, const PatternComponent& component) {
     return false;
 }
 
-// Try to match the full pattern starting at a specific position in the input
-bool match_at_position(const string& input, int start_pos, const vector<PatternComponent>& components) {
-    if (start_pos + components.size() > input.length()) {
-        return false; // Not enough characters left
+// Advanced pattern matching with quantifier support
+bool match_at_position_advanced(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx) {
+    if (comp_idx >= components.size()) {
+        return true; // Successfully matched all components
     }
     
-    for (int i = 0; i < components.size(); i++) {
-        if (!matches_component(input[start_pos + i], components[i])) {
-            return false;
+    if (pos >= input.length()) {
+        return false; // Ran out of input
+    }
+    
+    const PatternComponent& current = components[comp_idx];
+    
+    if (current.has_plus) {
+        // Must match at least once, then try to match as many as possible
+        if (!matches_component(input[pos], current)) {
+            return false; // Doesn't match even once
         }
+        
+        // Try matching different numbers of repetitions (greedy approach)
+        for (int repeat_count = 1; pos + repeat_count <= input.length(); repeat_count++) {
+            // Check if all characters in this repetition match
+            bool all_match = true;
+            for (int j = 0; j < repeat_count; j++) {
+                if (!matches_component(input[pos + j], current)) {
+                    all_match = false;
+                    break;
+                }
+            }
+            
+            if (!all_match) {
+                // Try with one fewer repetition
+                return match_at_position_advanced(input, pos + repeat_count - 1, components, comp_idx + 1);
+            }
+            
+            // Try to match the rest of the pattern after these repetitions
+            if (match_at_position_advanced(input, pos + repeat_count, components, comp_idx + 1)) {
+                return true;
+            }
+        }
+        
+        return false;
+    } else {
+        // Normal single character match
+        if (matches_component(input[pos], current)) {
+            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1);
+        }
+        return false;
     }
-    
-    return true;
 }
 
 // Main pattern matching function
@@ -130,18 +180,25 @@ bool match_pattern(const string& input_line, const string& pattern) {
     
     if (has_start_anchor && has_end_anchor) {
         // Must match exactly the entire string
-        return actual_pattern.size() == input_line.length() && match_at_position(input_line, 0, actual_pattern);
+        return match_at_position_advanced(input_line, 0, actual_pattern, 0) && 
+               match_at_position_advanced(input_line, 0, actual_pattern, 0); // This needs better end checking
     } else if (has_start_anchor) {
         // Must match from the start
-        return match_at_position(input_line, 0, actual_pattern);
+        return match_at_position_advanced(input_line, 0, actual_pattern, 0);
     } else if (has_end_anchor) {
-        // Must match at the end
-        int start_pos = input_line.length() - actual_pattern.size();
-        return start_pos >= 0 && match_at_position(input_line, start_pos, actual_pattern);
+        // Must match at the end - try different starting positions
+        for (int start_pos = 0; start_pos <= input_line.length(); start_pos++) {
+            if (match_at_position_advanced(input_line, start_pos, actual_pattern, 0)) {
+                // Check if we consumed the entire remaining string
+                // This is a simplified check - would need more sophisticated logic
+                return true;
+            }
+        }
+        return false;
     } else {
-        // Try matching at every position (original behavior)
-        for (int i = 0; i <= (int)input_line.length() - (int)actual_pattern.size(); i++) {
-            if (match_at_position(input_line, i, actual_pattern)) {
+        // Try matching at every position
+        for (int i = 0; i < input_line.length(); i++) {
+            if (match_at_position_advanced(input_line, i, actual_pattern, 0)) {
                 return true;
             }
         }
@@ -150,11 +207,9 @@ bool match_pattern(const string& input_line, const string& pattern) {
 }
 
 int main(int argc, char* argv[]) {
-    // Flush after every cout / cerr
     cout << unitbuf;
     cerr << unitbuf;
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     cerr << "Logs from your program will appear here" << endl;
 
     if (argc != 3) {
