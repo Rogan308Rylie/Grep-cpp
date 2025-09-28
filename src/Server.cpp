@@ -1,386 +1,265 @@
+#include <algorithm>
+#include <cassert>
+#include <functional>
 #include <iostream>
+#include <ranges>
+#include <span>
 #include <string>
-#include <cctype>
+#include <unordered_map>
+#include <utility>
 #include <vector>
+int captured_group_count = 0;
+std::unordered_map<int, std::string_view> captured_group_match;
 
-using namespace std;
-
-// Forward declarations
-bool match_at_position_advanced(const string& input, int pos, const vector<struct PatternComponent>& components, int comp_idx, bool must_reach_end);
-
-// Represents a single pattern component
-struct PatternComponent {
-    enum Type { LITERAL, DIGIT, WORD, POSITIVE_CLASS, NEGATIVE_CLASS, START_ANCHOR, END_ANCHOR, DOT, ALTERNATION };
-    Type type;
-    string value; // For literals and character classes
-    vector<vector<PatternComponent>> alternatives; // For alternation groups
-    bool has_plus; // Whether this component has a + quantifier
-    bool has_question; // Whether this component has a ? quantifier
-    
-    PatternComponent(Type t, string v = "", bool plus = false, bool question = false) : type(t), value(v), has_plus(plus), has_question(question) {}
-};
-
-// Parse the pattern into components
-vector<PatternComponent> parse_pattern(const string& pattern) {
-    vector<PatternComponent> components;
-    
-    for (int i = 0; i < pattern.length(); i++) {
-        PatternComponent component(PatternComponent::LITERAL);
-        bool component_created = false;
-        
-        if (pattern[i] == '^') {
-            component = PatternComponent(PatternComponent::START_ANCHOR);
-            component_created = true;
-        } else if (pattern[i] == '$') {
-            component = PatternComponent(PatternComponent::END_ANCHOR);
-            component_created = true;
-        } else if (pattern[i] == '.') {
-            component = PatternComponent(PatternComponent::DOT);
-            component_created = true;
-        } else if (pattern[i] == '(') {
-            // Handle alternation groups
-            int depth = 1;
-            int start = i + 1;
-            i++; // Move past opening paren
-            
-            while (i < pattern.length() && depth > 0) {
-                if (pattern[i] == '(') depth++;
-                else if (pattern[i] == ')') depth--;
-                i++;
-            }
-            
-            if (depth == 0) {
-                // Found matching closing paren
-                string group_content = pattern.substr(start, i - start - 1);
-                
-                // Split by | to get alternatives
-                vector<string> alt_strings;
-                string current_alt = "";
-                int paren_depth = 0;
-                
-                for (char c : group_content) {
-                    if (c == '(' ) paren_depth++;
-                    else if (c == ')') paren_depth--;
-                    else if (c == '|' && paren_depth == 0) {
-                        alt_strings.push_back(current_alt);
-                        current_alt = "";
-                        continue;
-                    }
-                    current_alt += c;
-                }
-                alt_strings.push_back(current_alt);
-                
-                // Parse each alternative
-                PatternComponent alt_component(PatternComponent::ALTERNATION);
-                for (const string& alt : alt_strings) {
-                    vector<PatternComponent> alt_pattern = parse_pattern(alt);
-                    alt_component.alternatives.push_back(alt_pattern);
-                }
-                
-                component = alt_component;
-                component_created = true;
-                i--; // Adjust since we'll increment at end of loop
-            } else {
-                // Unmatched paren, treat as literal
-                component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
-                component_created = true;
-            }
-        } else if (pattern[i] == '\\' && i + 1 < pattern.length()) {
-            char next = pattern[i + 1];
-            if (next == 'd') {
-                component = PatternComponent(PatternComponent::DIGIT);
-                i++; // Skip the next character
-                component_created = true;
-            } else if (next == 'w') {
-                component = PatternComponent(PatternComponent::WORD);
-                i++; // Skip the next character
-                component_created = true;
-            } else {
-                component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
-                component_created = true;
-            }
-        } else if (pattern[i] == '[') {
-            int end = i;
-            while (end < pattern.length() && pattern[end] != ']') {
-                end++;
-            }
-            if (end < pattern.length()) {
-                string class_content = pattern.substr(i + 1, end - i - 1);
-                if (!class_content.empty() && class_content[0] == '^') {
-                    component = PatternComponent(PatternComponent::NEGATIVE_CLASS, class_content.substr(1));
-                } else {
-                    component = PatternComponent(PatternComponent::POSITIVE_CLASS, class_content);
-                }
-                i = end; // Move past the closing bracket
-                component_created = true;
-            } else {
-                component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
-                component_created = true;
-            }
-        } else {
-            component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
-            component_created = true;
-        }
-        
-        // Check for quantifiers after the component
-        if (component_created && i + 1 < pattern.length()) {
-            if (pattern[i + 1] == '+') {
-                component.has_plus = true;
-                i++; // Skip the + character
-            } else if (pattern[i + 1] == '?') {
-                component.has_question = true;
-                i++; // Skip the ? character
-            }
-        }
-        
-        if (component_created) {
-            components.push_back(component);
-        }
-    }
-    
-    return components;
+std::size_t match_single_char(std::string_view input_line, char pattern) {
+    return static_cast<std::size_t>(input_line[0] == pattern);
+}
+std::size_t match_digit(std::string_view input_line) {
+    return static_cast<std::size_t>(std::ranges::find_if(input_line, isdigit) == input_line.begin());
+}
+std::size_t match_alphanum(std::string_view input_line) {
+    return static_cast<std::size_t>(std::ranges::find_if(input_line, isalnum) == input_line.begin());
 }
 
-// Check if a character matches a single pattern component
-bool matches_component(char c, const PatternComponent& component) {
-    switch (component.type) {
-        case PatternComponent::LITERAL:
-            return c == component.value[0];
-            
-        case PatternComponent::DIGIT:
-            return isdigit(c);
-            
-        case PatternComponent::WORD:
-            return isalnum(c) || c == '_';
-            
-        case PatternComponent::POSITIVE_CLASS:
-            for (char pattern_char : component.value) {
-                if (c == pattern_char) {
-                    return true;
+std::size_t match_group(std::string_view input_line, std::string_view pattern) {
+    if (pattern[0] == '^') return static_cast<std::size_t>(input_line.find_first_not_of(pattern.substr(1)) == 0);
+    return static_cast<std::size_t>(input_line.find_first_of(pattern) == 0);
+}
+
+std::size_t match_backreference(std::string_view input_line, int group_id) {
+    if (!captured_group_match.contains(group_id)) return 0;
+    if (input_line.starts_with(captured_group_match[group_id])) return captured_group_match[group_id].size();
+    return 0;
+}
+
+enum class TokenType { character, digit, alphnum, wildcard, backreference, group, parenthesis, pattern };
+std::string_view type_to_str(TokenType type) {
+    switch (type) {
+        case TokenType::character:
+            return "character";
+        case TokenType::digit:
+            return "digit";
+        case TokenType::alphnum:
+            return "alphnum";
+        case TokenType::wildcard:
+            return "wildcard";
+        case TokenType::backreference:
+            return "backreference";
+        case TokenType::group:
+            return "group";
+        case TokenType::parenthesis:
+            return "parenthesis";
+        case TokenType::pattern:
+            return "pattern";
+    }
+    std::unreachable();
+}
+
+class Token {
+   private:
+    const TokenType m_type;
+    const std::string_view m_pattern;
+    int captured_group_idx{0};
+    std::vector<Token> subtokens{};
+    bool one_or_more{false};
+    bool zero_or_one{false};
+
+   public:
+    Token(const TokenType type, const std::string_view pattern, int captured_group_idx = 0)
+        : m_type{type}, m_pattern{pattern}, captured_group_idx{captured_group_idx} {
+        if (type == TokenType::parenthesis) {
+            using namespace std::literals;
+            for (const auto word : std::views::split(pattern, "|"sv)) {
+                std::cout << "hello " << std::string_view(word) << std::endl;
+                subtokens.push_back(Token(TokenType::pattern, std::string_view(word)));
+            }
+        }
+        if (type == TokenType::pattern) {
+            std::string_view local_pattern{pattern};
+            while (local_pattern.size()) {
+                if (local_pattern.starts_with("\\d")) {
+                    subtokens.push_back(Token(TokenType::digit, "\\d"));
+                    local_pattern = local_pattern.substr(2);
+                } else if (local_pattern.starts_with("\\w")) {
+                    subtokens.push_back(Token(TokenType::alphnum, "\\w"));
+                    local_pattern = local_pattern.substr(2);
+                } else if (local_pattern.starts_with(".")) {
+                    subtokens.push_back(Token(TokenType::wildcard, "."));
+                    local_pattern = local_pattern.substr(1);
+                } else if (local_pattern.starts_with("[")) {
+                    const auto end = local_pattern.find("]");
+                    subtokens.push_back(Token(TokenType::group, local_pattern.substr(1, end - 1)));
+                    local_pattern = local_pattern.substr(end + 1);
+                } else if (local_pattern.starts_with("(")) {
+                    const auto end = local_pattern.find(")");
+                    subtokens.push_back(
+                        Token(TokenType::parenthesis, local_pattern.substr(1, end - 1), ++captured_group_count));
+                    local_pattern = local_pattern.substr(end + 1);
+                } else if (local_pattern.starts_with("\\") && isdigit(local_pattern[1])) {
+                    subtokens.push_back(
+                        Token(TokenType::backreference, local_pattern.substr(0, 2), local_pattern[1] - '0'));
+                    local_pattern = local_pattern.substr(2);
+                } else if (local_pattern.starts_with("?")) {
+                    assert(subtokens.size());
+                    subtokens.back().set_zero_or_one(true);
+                    local_pattern = local_pattern.substr(1);
+                } else if (local_pattern.starts_with("+")) {
+                    assert(subtokens.size());
+                    subtokens.back().set_one_or_more(true);
+                    local_pattern = local_pattern.substr(1);
+                } else {
+                    subtokens.push_back(Token(TokenType::character, local_pattern.substr(0, 1)));
+                    local_pattern = local_pattern.substr(1);
                 }
             }
-            return false;
-            
-        case PatternComponent::NEGATIVE_CLASS:
-            for (char pattern_char : component.value) {
-                if (c == pattern_char) {
-                    return false;
+        }
+    }
+
+    TokenType type() const {
+        return m_type;
+    }
+
+    std::string_view pattern() const {
+        return m_pattern;
+    }
+
+    void set_one_or_more(bool x) {
+        one_or_more = x;
+    }
+    void set_zero_or_one(bool x) {
+        zero_or_one = x;
+    }
+
+    std::vector<std::size_t> match_sizes(std::string_view input) const {
+        std::vector<std::size_t> res;
+        if (zero_or_one) res.push_back(0);
+        if (m_type == TokenType::pattern) {
+            std::vector<std::size_t> current_match_sizes{0};
+            for (const auto& tok : subtokens) {
+                std::vector<std::size_t> next_match_sizes{};
+                for (auto dim : current_match_sizes) {
+                    auto add = tok.match_sizes(input.substr(dim));
+                    for (auto& x : add) x += dim;
+                    next_match_sizes.insert(next_match_sizes.end(), add.begin(), add.end());
                 }
+                current_match_sizes = std::move(next_match_sizes);
             }
-            return true;
-            
-        case PatternComponent::DOT:
-            return true; // Dot matches any character
-            
-        case PatternComponent::ALTERNATION:
-            return false; // Alternations are handled differently in the main matching logic
+            return current_match_sizes;
+        }
+        if (m_type == TokenType::parenthesis) {
+            std::vector<std::size_t> current_match_sizes{};
+            for (const auto& tok : subtokens) {
+                const auto add = tok.match_sizes(input);
+                current_match_sizes.insert(current_match_sizes.end(), add.begin(), add.end());
+            }
+            std::ranges::sort(current_match_sizes);
+            current_match_sizes.resize(std::unique(current_match_sizes.begin(), current_match_sizes.end()) -
+                                       current_match_sizes.begin());
+
+            if (!current_match_sizes.empty()) {
+                captured_group_match[captured_group_idx] = input.substr(0, current_match_sizes.back());
+            }
+            return current_match_sizes;
+        }
+
+        std::size_t current_match_size{0};
+        while (input.size()) {
+            std::size_t len{0};
+            switch (m_type) {
+                case TokenType::character:
+                    len = match_single_char(input, m_pattern[0]);
+                    break;
+                case TokenType::digit:
+                    len = match_digit(input);
+                    break;
+                case TokenType::alphnum:
+                    len = match_alphanum(input);
+                    break;
+                case TokenType::wildcard:
+                    len = 1;
+                    break;
+                case TokenType::backreference:
+                    len = match_backreference(input, captured_group_idx);
+                    break;
+                case TokenType::group:
+                    len = match_group(input, m_pattern);
+                    break;
+            }
+            if (len) {
+                current_match_size += len;
+                res.push_back(current_match_size);
+                input = input.substr(len);
+            } else {
+                break;
+            }
+            if (!one_or_more) break;
+        }
+        if (input.empty() && m_pattern == "$") {
+            res.push_back(current_match_size);
+        }
+        return res;
+    }
+    friend std::ostream& operator<<(std::ostream& o, const Token& t) {
+        o << type_to_str(t.m_type) << " :{";
+        for (auto x : t.subtokens) {
+            o << x << ",";
+        }
+        o << "}";
+        return o;
+    }
+};
+
+bool match_pattern_start(std::string_view input_line, std::span<Token> tokens) {
+    if (tokens.empty()) return true;
+    if (input_line.empty()) return tokens.size() == 1 && tokens[0].pattern() == "$";
+    std::vector<std::size_t> match_sizes{tokens[0].match_sizes(input_line)};
+    for (const auto dim : match_sizes) {
+        if (match_pattern_start(input_line.substr(dim), tokens.subspan(1))) return true;
+    }
+    return false;
+}
+bool match_pattern(std::string_view input_line, std::string_view pattern) {
+    bool line_start = pattern[0] == '^';
+    if (line_start) pattern = pattern.substr(1);
+    Token parser(TokenType::pattern, pattern);
+    std::cout << parser << std::endl;
+    if (line_start) return !parser.match_sizes(input_line).empty();
+    for (int i = 0; i < input_line.size(); i++) {
+        if (!parser.match_sizes(input_line.substr(i)).empty()) return true;
     }
     return false;
 }
 
-// Helper function to match alternatives within alternation groups
-bool match_alternatives_at_position(const string& input, int pos, const vector<PatternComponent>& alt_components, int alt_idx, const vector<PatternComponent>& main_components, int main_idx, bool must_reach_end) {
-    if (alt_idx >= alt_components.size()) {
-        // Finished matching this alternative, continue with main pattern
-        return match_at_position_advanced(input, pos, main_components, main_idx, must_reach_end);
-    }
-    
-    if (pos >= input.length() && alt_idx < alt_components.size()) {
-        return false; // Ran out of input
-    }
-    
-    const PatternComponent& current = alt_components[alt_idx];
-    
-    if (current.has_plus) {
-        if (!matches_component(input[pos], current)) {
-            return false;
-        }
-        
-        for (int repeat_count = 1; pos + repeat_count <= input.length(); repeat_count++) {
-            bool all_match = true;
-            for (int j = 0; j < repeat_count; j++) {
-                if (!matches_component(input[pos + j], current)) {
-                    all_match = false;
-                    break;
-                }
-            }
-            
-            if (!all_match) {
-                return match_alternatives_at_position(input, pos + repeat_count - 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end);
-            }
-            
-            if (match_alternatives_at_position(input, pos + repeat_count, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end)) {
-                return true;
-            }
-        }
-        return false;
-    } else if (current.has_question) {
-        if (match_alternatives_at_position(input, pos, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end)) {
-            return true;
-        }
-        if (matches_component(input[pos], current)) {
-            return match_alternatives_at_position(input, pos + 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end);
-        }
-        return false;
-    } else {
-        if (matches_component(input[pos], current)) {
-            return match_alternatives_at_position(input, pos + 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end);
-        }
-        return false;
-    }
-}
-
-// Advanced pattern matching with quantifier support
-bool match_at_position_advanced(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, bool must_reach_end = false) {
-    if (comp_idx >= components.size()) {
-        return !must_reach_end || pos == input.length(); // If must_reach_end, we need to consume entire string
-    }
-    
-    if (pos >= input.length()) {
-        // Special case: if we ran out of input, check if remaining components are all optional
-        for (int remaining_idx = comp_idx; remaining_idx < components.size(); remaining_idx++) {
-            const PatternComponent& remaining = components[remaining_idx];
-            if (!remaining.has_question) {
-                return false; // Required component but no input left
-            }
-        }
-        return true; // All remaining components are optional
-    }
-    
-    const PatternComponent& current = components[comp_idx];
-    
-    if (current.type == PatternComponent::ALTERNATION) {
-        // Try each alternative
-        for (const auto& alternative : current.alternatives) {
-            // Try to match this alternative at current position
-            if (match_alternatives_at_position(input, pos, alternative, 0, components, comp_idx + 1, must_reach_end)) {
-                return true;
-            }
-        }
-        return false;
-    } else if (current.has_plus) {
-        // Must match at least once, then try to match as many as possible
-        if (!matches_component(input[pos], current)) {
-            return false; // Doesn't match even once
-        }
-        
-        // Try matching different numbers of repetitions (greedy approach)
-        for (int repeat_count = 1; pos + repeat_count <= input.length(); repeat_count++) {
-            // Check if all characters in this repetition match
-            bool all_match = true;
-            for (int j = 0; j < repeat_count; j++) {
-                if (!matches_component(input[pos + j], current)) {
-                    all_match = false;
-                    break;
-                }
-            }
-            
-            if (!all_match) {
-                // Try with one fewer repetition
-                return match_at_position_advanced(input, pos + repeat_count - 1, components, comp_idx + 1, must_reach_end);
-            }
-            
-            // Try to match the rest of the pattern after these repetitions
-            if (match_at_position_advanced(input, pos + repeat_count, components, comp_idx + 1, must_reach_end)) {
-                return true;
-            }
-        }
-        
-        return false;
-    } else if (current.has_question) {
-        // Can match zero or one time
-        // Try matching zero times first (skip this component)
-        if (match_at_position_advanced(input, pos, components, comp_idx + 1, must_reach_end)) {
-            return true;
-        }
-        
-        // Try matching one time
-        if (matches_component(input[pos], current)) {
-            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1, must_reach_end);
-        }
-        
-        return false;
-    } else {
-        // Normal single character match
-        if (matches_component(input[pos], current)) {
-            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1, must_reach_end);
-        }
-        return false;
-    }
-}
-
-// Main pattern matching function
-bool match_pattern(const string& input_line, const string& pattern) {
-    vector<PatternComponent> components = parse_pattern(pattern);
-    
-    // Check for anchors
-    bool has_start_anchor = !components.empty() && components[0].type == PatternComponent::START_ANCHOR;
-    bool has_end_anchor = !components.empty() && components.back().type == PatternComponent::END_ANCHOR;
-    
-    // Remove anchors from the actual pattern to match
-    vector<PatternComponent> actual_pattern = components;
-    if (has_start_anchor) {
-        actual_pattern.erase(actual_pattern.begin());
-    }
-    if (has_end_anchor) {
-        actual_pattern.pop_back();
-    }
-    
-    if (has_start_anchor && has_end_anchor) {
-        // Must match exactly the entire string
-        return match_at_position_advanced(input_line, 0, actual_pattern, 0, true);
-    } else if (has_start_anchor) {
-        // Must match from the start
-        return match_at_position_advanced(input_line, 0, actual_pattern, 0, false);
-    } else if (has_end_anchor) {
-        // Must match at the end - try different starting positions but must consume to end
-        for (int start_pos = 0; start_pos <= (int)input_line.length() - (int)actual_pattern.size(); start_pos++) {
-            if (match_at_position_advanced(input_line, start_pos, actual_pattern, 0, true)) {
-                return true;
-            }
-        }
-        return false;
-    } else {
-        // Try matching at every position
-        for (int i = 0; i < input_line.length(); i++) {
-            if (match_at_position_advanced(input_line, i, actual_pattern, 0, false)) {
-                return true;
-            }
-        }
-        return false;
-    }
-}
-
 int main(int argc, char* argv[]) {
-    cout << unitbuf;
-    cerr << unitbuf;
-
-    cerr << "Logs from your program will appear here" << endl;
-
+    // Flush after every std::cout / std::cerr
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
     if (argc != 3) {
-        cerr << "Expected two arguments" << endl;
+        std::cerr << "Expected two arguments" << std::endl;
         return 1;
     }
 
-    string flag = argv[1];
-    string pattern = argv[2];
+    std::string flag = argv[1];
+    std::string pattern = argv[2];
 
     if (flag != "-E") {
-        cerr << "Expected first argument to be '-E'" << endl;
+        std::cerr << "Expected first argument to be '-E'" << std::endl;
         return 1;
     }
 
-    string input_line;
-    getline(cin, input_line);
+    std::string input_line;
+    std::getline(std::cin, input_line);
 
     try {
         if (match_pattern(input_line, pattern)) {
+            std::cout << "match" << std::endl;
             return 0;
         } else {
+            std::cout << "no match" << std::endl;
             return 1;
         }
-    } catch (const runtime_error& e) {
-        cerr << e.what() << endl;
+    } catch (const std::runtime_error& e) {
+        std::cerr << e.what() << std::endl;
         return 1;
     }
 }
