@@ -27,14 +27,35 @@ bool match_pattern(const string& input_line, const string& pattern) {
         return false;
     }
     else if (pattern.length() > 2 && pattern[0] == '[' && pattern[pattern.length()-1] == ']') {
-        // Handle positive character groups like [abc]
-        string chars_to_match = pattern.substr(1, pattern.length()-2); // Extract characters between [ and ]
+        // Handle character groups (both positive and negative)
+        string chars_in_brackets = pattern.substr(1, pattern.length()-2); // Extract characters between [ and ]
+        
+        bool is_negative = false;
+        string chars_to_check = chars_in_brackets;
+        
+        // Check if it's a negative character group (starts with ^)
+        if (!chars_in_brackets.empty() && chars_in_brackets[0] == '^') {
+            is_negative = true;
+            chars_to_check = chars_in_brackets.substr(1); // Remove the ^ symbol
+        }
         
         for (char input_char : input_line) {
-            for (char pattern_char : chars_to_match) {
+            bool char_found_in_set = false;
+            
+            // Check if current input character is in the character set
+            for (char pattern_char : chars_to_check) {
                 if (input_char == pattern_char) {
-                    return true;
+                    char_found_in_set = true;
+                    break;
                 }
+            }
+            
+            // For negative groups: return true if we find a char NOT in the set
+            // For positive groups: return true if we find a char IN the set
+            if (is_negative && !char_found_in_set) {
+                return true;
+            } else if (!is_negative && char_found_in_set) {
+                return true;
             }
         }
         return false;
@@ -64,6 +85,8 @@ int main(int argc, char* argv[]) {
         cerr << "Expected first argument to be '-E'" << endl;
         return 1;
     }
+
+    // Uncomment this block to pass the first stage
     
     string input_line;
     getline(cin, input_line);
