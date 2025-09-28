@@ -17,6 +17,15 @@ bool match_pattern(const string& input_line, const string& pattern) {
         }
         return false;
     }
+    else if (pattern == "\\w") {
+        // Check if input contains any word character (alphanumeric or underscore)
+        for (char c : input_line) {
+            if (isalnum(c) || c == '_') {
+                return true;
+            }
+        }
+        return false;
+    }
     else {
         throw runtime_error("Unhandled pattern " + pattern);
     }
