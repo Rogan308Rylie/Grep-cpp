@@ -112,9 +112,9 @@ bool matches_component(char c, const PatternComponent& component) {
 }
 
 // Advanced pattern matching with quantifier support
-bool match_at_position_advanced(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx) {
+bool match_at_position_advanced(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, bool must_reach_end = false) {
     if (comp_idx >= components.size()) {
-        return true; // Successfully matched all components
+        return !must_reach_end || pos == input.length(); // If must_reach_end, we need to consume entire string
     }
     
     if (pos >= input.length()) {
@@ -142,11 +142,11 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
             
             if (!all_match) {
                 // Try with one fewer repetition
-                return match_at_position_advanced(input, pos + repeat_count - 1, components, comp_idx + 1);
+                return match_at_position_advanced(input, pos + repeat_count - 1, components, comp_idx + 1, must_reach_end);
             }
             
             // Try to match the rest of the pattern after these repetitions
-            if (match_at_position_advanced(input, pos + repeat_count, components, comp_idx + 1)) {
+            if (match_at_position_advanced(input, pos + repeat_count, components, comp_idx + 1, must_reach_end)) {
                 return true;
             }
         }
@@ -155,7 +155,7 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
     } else {
         // Normal single character match
         if (matches_component(input[pos], current)) {
-            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1);
+            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1, must_reach_end);
         }
         return false;
     }
@@ -180,17 +180,14 @@ bool match_pattern(const string& input_line, const string& pattern) {
     
     if (has_start_anchor && has_end_anchor) {
         // Must match exactly the entire string
-        return match_at_position_advanced(input_line, 0, actual_pattern, 0) && 
-               match_at_position_advanced(input_line, 0, actual_pattern, 0); // This needs better end checking
+        return match_at_position_advanced(input_line, 0, actual_pattern, 0, true);
     } else if (has_start_anchor) {
         // Must match from the start
-        return match_at_position_advanced(input_line, 0, actual_pattern, 0);
+        return match_at_position_advanced(input_line, 0, actual_pattern, 0, false);
     } else if (has_end_anchor) {
-        // Must match at the end - try different starting positions
+        // Must match at the end - try different starting positions but must consume to end
         for (int start_pos = 0; start_pos <= input_line.length(); start_pos++) {
-            if (match_at_position_advanced(input_line, start_pos, actual_pattern, 0)) {
-                // Check if we consumed the entire remaining string
-                // This is a simplified check - would need more sophisticated logic
+            if (match_at_position_advanced(input_line, start_pos, actual_pattern, 0, true)) {
                 return true;
             }
         }
@@ -198,7 +195,7 @@ bool match_pattern(const string& input_line, const string& pattern) {
     } else {
         // Try matching at every position
         for (int i = 0; i < input_line.length(); i++) {
-            if (match_at_position_advanced(input_line, i, actual_pattern, 0)) {
+            if (match_at_position_advanced(input_line, i, actual_pattern, 0, false)) {
                 return true;
             }
         }
