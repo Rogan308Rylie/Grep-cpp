@@ -26,6 +26,19 @@ bool match_pattern(const string& input_line, const string& pattern) {
         }
         return false;
     }
+    else if (pattern.length() > 2 && pattern[0] == '[' && pattern[pattern.length()-1] == ']') {
+        // Handle positive character groups like [abc]
+        string chars_to_match = pattern.substr(1, pattern.length()-2); // Extract characters between [ and ]
+        
+        for (char input_char : input_line) {
+            for (char pattern_char : chars_to_match) {
+                if (input_char == pattern_char) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
     else {
         throw runtime_error("Unhandled pattern " + pattern);
     }
