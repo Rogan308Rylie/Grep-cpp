@@ -379,35 +379,32 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
         return false;
         
     } else if (current.has_plus) {
-        // Must match at least once, then try to match as many as possible
-        if (!matches_component(input[pos], current)) {
-            return false; // Doesn't match even once
+        // Must match at least once.
+        if (pos >= input.length() || !matches_component(input[pos], current)) {
+            return false;
         }
         
-        // Try matching different numbers of repetitions (greedy approach)
-        for (int repeat_count = 1; pos + repeat_count <= input.length(); repeat_count++) {
-            // Check if all characters in this repetition match
-            bool all_match = true;
-            for (int j = 0; j < repeat_count; j++) {
-                if (!matches_component(input[pos + j], current)) {
-                    all_match = false;
-                    break;
-                }
-            }
-            
-            if (!all_match) {
-                // Try with one fewer repetition
-                return match_at_position_advanced(input, pos + repeat_count - 1, components, comp_idx + 1, must_reach_end, state);
-            }
-            
-            // Try to match the rest of the pattern after these repetitions
-            if (match_at_position_advanced(input, pos + repeat_count, components, comp_idx + 1, must_reach_end, state)) {
+        // 1. Find the maximum possible match length (greedy).
+        int max_match_len = 0;
+        while (pos + max_match_len < input.length() && matches_component(input[pos + max_match_len], current)) {
+            max_match_len++;
+        }
+        
+        // 2. Backtrack loop: Try matching the rest of the pattern from longest match down to 1.
+        for (int len = max_match_len; len >= 1; len--) {
+            // Create a temporary state for the recursive call to maintain consistency, 
+            // though the state itself won't change here since this isn't a capturing group.
+            MatchState temp_state = state; 
+
+            if (match_at_position_advanced(input, pos + len, components, comp_idx + 1, must_reach_end, temp_state)) {
+                // If the rest of the pattern matches, commit the state and return true.
+                state = temp_state;
                 return true;
             }
         }
         
-        return false;
-        
+        return false; // No repetition count worked
+
     } else if (current.has_question) {
         // Can match zero or one time
         // Try matching zero times first (skip this component)
