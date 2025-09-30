@@ -34,6 +34,7 @@ struct PatternComponent {
 
 // Forward declarations
 bool match_at_position_advanced(const string& input, int pos, const vector<struct PatternComponent>& components, int comp_idx, bool must_reach_end, MatchState& state);
+bool match_pattern(const string& input, const string& pattern); // Forward declaration added
 
 // Check if a character matches a single pattern component
 bool matches_component(char c, const PatternComponent& component) {
@@ -75,6 +76,7 @@ bool matches_component(char c, const PatternComponent& component) {
 
 // Helper function to match a sequence of components and return the new position.
 // Returns the index in the input after the successful match, or -1 on failure.
+// NOTE: This helper is only for finding the resulting position of a sub-sequence, not for updating capture state.
 int match_component_sequence(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, const MatchState& state_in) {
     if (comp_idx >= components.size()) {
         return pos; // Finished matching the sequence
@@ -143,7 +145,6 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
         // 2. Backtrack loop: Try matching the rest of the pattern from longest match down to 1.
         for (int len = max_match_len; len >= 1; len--) {
             // Match the rest of the sequence (comp_idx + 1) starting after the match of length 'len'.
-            // Note: state_in is const, so no state is modified here.
             int result = match_component_sequence(input, pos + len, components, comp_idx + 1, state_in);
             if (result != -1) {
                 return result; // Success!
@@ -171,11 +172,10 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
     }
 }
 
-
-// Parse the pattern into components
-vector<PatternComponent> parse_pattern(const string& pattern) {
+// Function to parse a regex pattern segment.
+// It takes `group_counter` by reference to maintain sequential group numbering across recursion.
+vector<PatternComponent> parse_pattern_segment(const string& pattern, int& group_counter) {
     vector<PatternComponent> components;
-    int group_counter = 0; 
     
     for (int i = 0; i < pattern.length(); i++) {
         PatternComponent component(PatternComponent::LITERAL);
@@ -223,17 +223,18 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
                 }
                 alt_strings.push_back(current_alt);
                 
-                // Parse each alternative
+                // Parse each alternative recursively, updating group_counter
                 PatternComponent alt_component(PatternComponent::ALTERNATION);
                 for (const string& alt : alt_strings) {
-                    vector<PatternComponent> alt_pattern = parse_pattern(alt);
+                    // *** RECURSIVE CALL HERE ***
+                    vector<PatternComponent> alt_pattern = parse_pattern_segment(alt, group_counter);
                     alt_component.alternatives.push_back(alt_pattern);
                 }
                 
-                // --- Multiple Capture Group Logic ---
+                // --- Capture Group Logic ---
                 group_counter++;
                 alt_component.capture_group_id = group_counter;
-                // ------------------------------------
+                // ---------------------------
                 
                 component = alt_component;
                 component_created = true;
@@ -253,7 +254,7 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
                 component = PatternComponent(PatternComponent::WORD);
                 i++; // Skip 'w'
                 component_created = true;
-            } else if (isdigit(next) && (next - '0') >= 1) { // --- Handle \1 to \9 Backreferences ---
+            } else if (isdigit(next) && (next - '0') >= 1) { // Handle \1 to \9 Backreferences
                 int backref_id = next - '0';
                 component = PatternComponent(PatternComponent::BACKREFERENCE, "", false, false, 0, backref_id);
                 i++; // Skip the digit
@@ -305,6 +306,13 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
     return components;
 }
 
+// Main pattern parsing function (wrapper for recursive calls)
+vector<PatternComponent> parse_pattern(const string& pattern) {
+    int group_counter = 0; // Initialize global group counter
+    return parse_pattern_segment(pattern, group_counter);
+}
+
+
 // Advanced pattern matching with quantifier and backreference support
 bool match_at_position_advanced(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, bool must_reach_end, MatchState& state) {
     if (comp_idx >= components.size()) {
@@ -354,7 +362,6 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
             MatchState temp_state = state; 
             
             // 2. Use the helper function `match_component_sequence` to find the span of the group match.
-            // Note: We use temp_state as input here because match_component_sequence only reads state.
             int end_of_group_match = match_component_sequence(input, pos, alternative, 0, temp_state);
             
             if (end_of_group_match != -1) {
@@ -367,6 +374,10 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
                 // -----------------------------------------------------------
 
                 // 3. Now try to match the rest of the main pattern starting from the new position.
+                // We use the original 'state' for the recursive call to match the rest of the components
+                // because the `temp_state` will only have the captures related to this group's match.
+                // However, `match_at_position_advanced` updates the state upon success, so we must
+                // pass `temp_state` and update the original `state` on success.
                 if (match_at_position_advanced(input, end_of_group_match, components, comp_idx + 1, must_reach_end, temp_state)) {
                     // Match succeeded all the way through! Commit the captured state.
                     state = temp_state;
@@ -426,52 +437,57 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
     }
 }
 
-// Main pattern matching function
-bool match_pattern(const string& input_line, const string& pattern) {
+// High-level pattern matching function to be called from main
+bool match_pattern(const string& input, const string& pattern) {
+    // 1. Parse the entire pattern
     vector<PatternComponent> components = parse_pattern(pattern);
+
+    // 2. Extract anchor flags and non-anchor components
+    bool starts_with_anchor = !components.empty() && components.front().type == PatternComponent::START_ANCHOR;
+    bool ends_with_anchor = !components.empty() && components.back().type == PatternComponent::END_ANCHOR;
+
+    vector<PatternComponent> effective_components;
     
-    // Check for anchors
-    bool has_start_anchor = !components.empty() && components[0].type == PatternComponent::START_ANCHOR;
-    bool has_end_anchor = !components.empty() && components.back().type == PatternComponent::END_ANCHOR;
+    // Find the range of components that are not anchors
+    int start_idx = starts_with_anchor ? 1 : 0;
+    int end_idx = ends_with_anchor ? components.size() - 1 : components.size();
     
-    // Remove anchors from the actual pattern to match
-    vector<PatternComponent> actual_pattern = components;
-    if (has_start_anchor) {
-        actual_pattern.erase(actual_pattern.begin());
-    }
-    if (has_end_anchor) {
-        actual_pattern.pop_back();
-    }
+    // Copy components excluding anchors
+    if (start_idx < end_idx) {
+        effective_components.insert(effective_components.end(), components.begin() + start_idx, components.begin() + end_idx);
+    } 
     
-    if (has_start_anchor && has_end_anchor) {
-        MatchState state;
-        // Must match exactly the entire string
-        return match_at_position_advanced(input_line, 0, actual_pattern, 0, true, state);
-    } else if (has_start_anchor) {
-        MatchState state;
-        // Must match from the start
-        return match_at_position_advanced(input_line, 0, actual_pattern, 0, false, state);
-    } else if (has_end_anchor) {
-        // Must match at the end - try different starting positions but must consume to end
-        for (int start_pos = 0; start_pos <= (int)input_line.length(); start_pos++) {
-            MatchState attempt_state;
-            
-            if (match_at_position_advanced(input_line, start_pos, actual_pattern, 0, true, attempt_state)) {
-                return true;
-            }
+    // Handle special case: pattern is exactly "^$" (matches only empty string)
+    if (effective_components.empty()) {
+        if (starts_with_anchor && ends_with_anchor) {
+            return input.empty();
         }
-        return false;
-    } else {
-        // Try matching at every position
-        for (int i = 0; i <= (int)input_line.length(); i++) {
-            MatchState attempt_state;
-            
-            if (match_at_position_advanced(input_line, i, actual_pattern, 0, false, attempt_state)) {
-                return true;
-            }
-        }
+        // For any other empty pattern (e.g., just `()`, `^`, or `$`), we return false.
         return false;
     }
+
+
+    // Determine the starting position(s) for the match attempt
+    int start_search_pos = 0;
+    // Search up to the last position where the pattern can start (including the end position for zero-width matches)
+    int end_search_pos = input.length(); 
+
+    if (starts_with_anchor) {
+        // If anchored to start, only check position 0
+        start_search_pos = 0;
+        end_search_pos = 0; // Only one attempt at pos 0
+    }
+    
+    // Try matching at every possible start position
+    for (int i = start_search_pos; i <= end_search_pos; ++i) {
+        MatchState state;
+        // The `must_reach_end` flag is set to true only if '$' was present.
+        if (match_at_position_advanced(input, i, effective_components, 0, ends_with_anchor, state)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 int main(int argc, char* argv[]) {
