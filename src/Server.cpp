@@ -1,15 +1,16 @@
 #include <iostream>
 #include <string>
-#include <cctype>
 #include <vector>
 #include <map>
+#include <cctype>
 #include <stdexcept>
+
 using namespace std;
 
 // --- Match State for Multiple Captures ---
 struct MatchState {
     // Key: Group number (1, 2, 3...), Value: captured string
-    map<int, string> captures; 
+    map<int, string> captures;
 };
 // -----------------------------------------
 
@@ -24,30 +25,27 @@ struct PatternComponent {
     
     // Group IDs for multiple backreferences
     int capture_group_id = 0; // 0 for non-capturing, 1 for group 1, 2 for group 2, etc.
-    int backref_id = 0;       // 0 for not a backref, 1 for \1, 2 for \2, etc.
-
+    int backref_id = 0; // 0 for not a backref, 1 for \1, 2 for \2, etc.
+    
     // Updated constructor
-    PatternComponent(Type t, string v = "", bool plus = false, bool question = false, int cg_id = 0, int br_id = 0) 
-        : type(t), value(v), alternatives(), has_plus(plus), has_question(question), 
+    PatternComponent(Type t, string v = "", bool plus = false, bool question = false, int cg_id = 0, int br_id = 0)
+        : type(t), value(v), alternatives(), has_plus(plus), has_question(question),
           capture_group_id(cg_id), backref_id(br_id) {}
 };
 
 // Forward declaration of the core recursive matching function
 int match_component_sequence(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, MatchState& state);
-bool match_pattern(const string& input, const string& pattern); 
+bool match_pattern(const string& input, const string& pattern);
 
 // Check if a character matches a single pattern component
 bool matches_component(char c, const PatternComponent& component) {
     switch (component.type) {
         case PatternComponent::LITERAL:
             return c == component.value[0];
-            
         case PatternComponent::DIGIT:
             return isdigit(c);
-            
         case PatternComponent::WORD:
             return isalnum(c) || c == '_';
-            
         case PatternComponent::POSITIVE_CLASS:
             for (char pattern_char : component.value) {
                 if (c == pattern_char) {
@@ -55,7 +53,6 @@ bool matches_component(char c, const PatternComponent& component) {
                 }
             }
             return false;
-            
         case PatternComponent::NEGATIVE_CLASS:
             for (char pattern_char : component.value) {
                 if (c == pattern_char) {
@@ -63,10 +60,8 @@ bool matches_component(char c, const PatternComponent& component) {
                 }
             }
             return true;
-            
         case PatternComponent::DOT:
-            return true; 
-            
+            return true;
         case PatternComponent::ALTERNATION:
         case PatternComponent::BACKREFERENCE:
             return false; // Handled in sequence matchers
@@ -85,11 +80,10 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
     if (pos >= input.length()) {
         for (int i = comp_idx; i < components.size(); ++i) {
             const PatternComponent& remaining = components[i];
-            
             // Required component if non-question and not an empty backref
             if (!remaining.has_question) {
                 if (remaining.type != PatternComponent::BACKREFERENCE || state.captures.count(remaining.backref_id) == 0 || state.captures.at(remaining.backref_id).empty()) {
-                    return -1; 
+                    return -1;
                 }
             }
         }
@@ -100,7 +94,6 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
     
     if (current.type == PatternComponent::BACKREFERENCE) {
         // Retrieve capture. If not found, it's considered an empty match.
-        // We use explicit check for capture existence to ensure map integrity during complex state copies.
         const bool has_capture = state.captures.count(current.backref_id) > 0;
         const string capture = has_capture ? state.captures.at(current.backref_id) : "";
         
@@ -112,24 +105,23 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
         if (pos + capture.length() > input.length() || input.substr(pos, capture.length()) != capture) {
             return -1;
         }
+        
         return match_component_sequence(input, pos + capture.length(), components, comp_idx + 1, state);
-    } 
+    }
     
     if (current.type == PatternComponent::ALTERNATION) {
-        // This is a capturing group (or an alternation group). 
-        
+        // This is a capturing group (or an alternation group).
         for (const auto& alternative : current.alternatives) {
             int start_pos = pos;
             
             // 1. Create a temporary state for the alternative attempt (for backtracking).
-            MatchState temp_state = state; 
-
-            // 2. Recursively match the alternative sequence. This updates temp_state 
-            // with captures for any *deeper* nested groups.
+            MatchState temp_state = state;
+            
+            // 2. Recursively match the alternative sequence. This updates temp_state
+            //    with captures for any *deeper* nested groups.
             int end_alt_match = match_component_sequence(input, pos, alternative, 0, temp_state);
             
             if (end_alt_match != -1) {
-                
                 // 3. The alternative matched. Capture the content for the *current* group.
                 if (current.capture_group_id > 0) {
                     temp_state.captures[current.capture_group_id] = input.substr(start_pos, end_alt_match - start_pos);
@@ -137,19 +129,17 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
                 
                 // 4. Continue matching the rest of the main sequence (outside this group).
                 int result = match_component_sequence(input, end_alt_match, components, comp_idx + 1, temp_state);
-                
                 if (result != -1) {
                     // Success! Commit the captured state and return.
-                    state = temp_state; 
-                    return result; 
+                    state = temp_state;
+                    return result;
                 }
             }
         }
         return -1; // All alternatives failed
     }
-
-    // --- Quantifier Logic (applies to simple character components) ---
     
+    // --- Quantifier Logic (applies to simple character components) ---
     if (current.has_plus) {
         // Must match at least once.
         if (pos >= input.length() || !matches_component(input[pos], current)) {
@@ -164,42 +154,38 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
         
         // 2. Backtrack loop: Try matching the rest of the pattern from longest match down to 1.
         for (int len = max_match_len; len >= 1; len--) {
-            // Create a temporary state for the recursive call to allow proper backtracking.
-            MatchState temp_state = state; 
-            
-            // Match the rest of the sequence (comp_idx + 1) starting after the match of length 'len'.
+            MatchState temp_state = state;
             int result = match_component_sequence(input, pos + len, components, comp_idx + 1, temp_state);
             if (result != -1) {
-                state = temp_state; // Commit state on success
-                return result; // Success!
+                state = temp_state;
+                return result;
             }
         }
-        return -1; // No repetition count worked
+        return -1;
         
     } else if (current.has_question) {
         // Try matching zero times first (skip this component)
         MatchState temp_state_skip = state;
         int result_skip = match_component_sequence(input, pos, components, comp_idx + 1, temp_state_skip);
         if (result_skip != -1) {
-            state = temp_state_skip; // Commit state on success
+            state = temp_state_skip;
             return result_skip;
         }
         
         // Try matching one time
         if (matches_component(input[pos], current)) {
-             MatchState temp_state_match = state;
+            MatchState temp_state_match = state;
             int result_match = match_component_sequence(input, pos + 1, components, comp_idx + 1, temp_state_match);
             if (result_match != -1) {
-                state = temp_state_match; // Commit state on success
+                state = temp_state_match;
                 return result_match;
             }
         }
-        
         return -1;
+        
     } else {
         // Normal single character match (no quantifier, no group, no backreference)
         if (matches_component(input[pos], current)) {
-            // No need for temp state as it doesn't capture, but we still recurse
             return match_component_sequence(input, pos + 1, components, comp_idx + 1, state);
         }
         return -1;
@@ -218,12 +204,15 @@ vector<PatternComponent> parse_pattern_segment(const string& pattern, int& group
         if (pattern[i] == '^') {
             component = PatternComponent(PatternComponent::START_ANCHOR);
             component_created = true;
+            
         } else if (pattern[i] == '$') {
             component = PatternComponent(PatternComponent::END_ANCHOR);
             component_created = true;
+            
         } else if (pattern[i] == '.') {
             component = PatternComponent(PatternComponent::DOT);
             component_created = true;
+            
         } else if (pattern[i] == '(') {
             // Handle alternation groups (capturing group)
             int depth = 1;
@@ -257,16 +246,16 @@ vector<PatternComponent> parse_pattern_segment(const string& pattern, int& group
                 }
                 alt_strings.push_back(current_alt);
                 
-                // --- Capture Group Logic: Assign ID first (Pre-order assignment) ---
+                // --- FIXED: Assign ID BEFORE parsing nested content ---
                 // Groups are numbered by the order of their opening parenthesis.
                 group_counter++;
+                int this_group_id = group_counter;
+                
                 PatternComponent alt_component(PatternComponent::ALTERNATION);
-                alt_component.capture_group_id = group_counter;
-                // -------------------------------------------------------------------
-
+                alt_component.capture_group_id = this_group_id;
+                
                 // Parse each alternative recursively, updating group_counter
                 for (const string& alt : alt_strings) {
-                    // *** RECURSIVE CALL HERE ***
                     vector<PatternComponent> alt_pattern = parse_pattern_segment(alt, group_counter);
                     alt_component.alternatives.push_back(alt_pattern);
                 }
@@ -274,49 +263,60 @@ vector<PatternComponent> parse_pattern_segment(const string& pattern, int& group
                 component = alt_component;
                 component_created = true;
                 i--; // Adjust since we'll increment at end of loop
+                
             } else {
                 // Unmatched paren, treat as literal (fallback)
                 component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
                 component_created = true;
             }
+            
         } else if (pattern[i] == '\\' && i + 1 < pattern.length()) {
             char next = pattern[i + 1];
+            
             if (next == 'd') {
                 component = PatternComponent(PatternComponent::DIGIT);
                 i++; // Skip 'd'
                 component_created = true;
+                
             } else if (next == 'w') {
                 component = PatternComponent(PatternComponent::WORD);
                 i++; // Skip 'w'
                 component_created = true;
+                
             } else if (isdigit(next) && (next - '0') >= 1) { // Handle \1 to \9 Backreferences
                 int backref_id = next - '0';
                 component = PatternComponent(PatternComponent::BACKREFERENCE, "", false, false, 0, backref_id);
                 i++; // Skip the digit
                 component_created = true;
+                
             } else {
                 // Not a special escaped character, treat as literal
                 component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
                 component_created = true;
             }
+            
         } else if (pattern[i] == '[') {
             int end = i;
             while (end < pattern.length() && pattern[end] != ']') {
                 end++;
             }
+            
             if (end < pattern.length()) {
                 string class_content = pattern.substr(i + 1, end - i - 1);
+                
                 if (!class_content.empty() && class_content[0] == '^') {
                     component = PatternComponent(PatternComponent::NEGATIVE_CLASS, class_content.substr(1));
                 } else {
                     component = PatternComponent(PatternComponent::POSITIVE_CLASS, class_content);
                 }
+                
                 i = end; // Move past the closing bracket
                 component_created = true;
             } else {
                 component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
                 component_created = true;
             }
+            
         } else {
             component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
             component_created = true;
@@ -347,16 +347,15 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
     return parse_pattern_segment(pattern, group_counter);
 }
 
-
 // High-level pattern matching function to be called from main
 bool match_pattern(const string& input, const string& pattern) {
     // 1. Parse the entire pattern
     vector<PatternComponent> components = parse_pattern(pattern);
-
+    
     // 2. Extract anchor flags and non-anchor components
     bool starts_with_anchor = !components.empty() && components.front().type == PatternComponent::START_ANCHOR;
     bool ends_with_anchor = !components.empty() && components.back().type == PatternComponent::END_ANCHOR;
-
+    
     vector<PatternComponent> effective_components;
     
     // Find the range of components that are not anchors
@@ -366,23 +365,21 @@ bool match_pattern(const string& input, const string& pattern) {
     // Copy components excluding anchors
     if (start_idx < end_idx) {
         effective_components.insert(effective_components.end(), components.begin() + start_idx, components.begin() + end_idx);
-    } 
+    }
     
     // Handle special case: pattern is exactly "^$" (matches only empty string)
     if (effective_components.empty()) {
         if (starts_with_anchor && ends_with_anchor) {
             return input.empty();
         }
-        // For any other empty pattern (e.g., just `()`, `^`, or `$`), we return false.
+        // For any other empty pattern, we return false.
         return false;
     }
-
-
+    
     // Determine the starting position(s) for the match attempt
     int start_search_pos = 0;
-    // Search up to the last position where the pattern can start (including the end position for zero-width matches)
-    int end_search_pos = input.length(); 
-
+    int end_search_pos = input.length();
+    
     if (starts_with_anchor) {
         // If anchored to start, only check position 0
         start_search_pos = 0;
@@ -403,7 +400,7 @@ bool match_pattern(const string& input, const string& pattern) {
             }
         }
     }
-
+    
     return false;
 }
 
@@ -411,18 +408,23 @@ int main(int argc, char* argv[]) {
     cout << unitbuf;
     cerr << unitbuf;
     cerr << "Logs from your program will appear here" << endl;
+    
     if (argc != 3) {
         cerr << "Expected two arguments" << endl;
         return 1;
     }
+    
     string flag = argv[1];
     string pattern = argv[2];
+    
     if (flag != "-E") {
         cerr << "Expected first argument to be '-E'" << endl;
         return 1;
     }
+    
     string input_line;
     getline(cin, input_line);
+    
     try {
         if (match_pattern(input_line, pattern)) {
             return 0;
