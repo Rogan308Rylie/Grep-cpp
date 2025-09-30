@@ -100,7 +100,9 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
     
     if (current.type == PatternComponent::BACKREFERENCE) {
         // Retrieve capture. If not found, it's considered an empty match.
-        const string capture = (state.captures.count(current.backref_id)) ? state.captures.at(current.backref_id) : "";
+        // We use explicit check for capture existence to ensure map integrity during complex state copies.
+        const bool has_capture = state.captures.count(current.backref_id) > 0;
+        const string capture = has_capture ? state.captures.at(current.backref_id) : "";
         
         if (capture.empty()) {
             // Empty capture matches zero length, continue
