@@ -11,12 +11,6 @@ struct MatchState {
 };
 // -------------------------------------------------
 
-// Forward declarations
-// Signatures updated to include MatchState& state
-bool match_at_position_advanced(const string& input, int pos, const vector<struct PatternComponent>& components, int comp_idx, bool must_reach_end, MatchState& state);
-bool match_alternatives_at_position(const string& input, int pos, const vector<PatternComponent>& alt_components, int alt_idx, const vector<PatternComponent>& main_components, int main_idx, bool must_reach_end, MatchState& state);
-
-
 // Represents a single pattern component
 struct PatternComponent {
     // Added BACKREFERENCE Type
@@ -34,17 +28,65 @@ struct PatternComponent {
         : type(t), value(v), alternatives(), has_plus(plus), has_question(question), is_group1_capture(g1) {}
 };
 
+// Forward declarations
+// Signatures updated to include MatchState& state
+bool match_at_position_advanced(const string& input, int pos, const vector<struct PatternComponent>& components, int comp_idx, bool must_reach_end, MatchState& state);
+
+// Check if a character matches a single pattern component
+bool matches_component(char c, const PatternComponent& component) {
+    switch (component.type) {
+        case PatternComponent::LITERAL:
+            return c == component.value[0];
+            
+        case PatternComponent::DIGIT:
+            return isdigit(c);
+            
+        case PatternComponent::WORD:
+            return isalnum(c) || c == '_';
+            
+        case PatternComponent::POSITIVE_CLASS:
+            for (char pattern_char : component.value) {
+                if (c == pattern_char) {
+                    return true;
+                }
+            }
+            return false;
+            
+        case PatternComponent::NEGATIVE_CLASS:
+            for (char pattern_char : component.value) {
+                if (c == pattern_char) {
+                    return false;
+                }
+            }
+            return true;
+            
+        case PatternComponent::DOT:
+            return true; // Dot matches any character
+            
+        case PatternComponent::ALTERNATION:
+        case PatternComponent::BACKREFERENCE:
+            return false; // These are handled in the sequence matchers, not per character
+    }
+    return false;
+}
+
 // Helper function to match a sequence of components and return the new position.
 // Returns the index in the input after the successful match, or -1 on failure.
-// This is necessary to cleanly calculate the captured string span.
+// This is necessary to cleanly calculate the captured string span and must handle
+// all component types, including nested ALTERNATION groups.
 int match_component_sequence(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, const MatchState& state_in) {
     if (comp_idx >= components.size()) {
         return pos; // Finished matching the sequence
     }
-    if (pos >= input.length() && components[comp_idx].type != PatternComponent::BACKREFERENCE) {
-        // Only allow match to continue if the remaining components are optional or backreferences (handled by subsequent logic)
+    
+    // If we run out of input, check if remaining required components can match
+    if (pos >= input.length()) {
         for (int i = comp_idx; i < components.size(); ++i) {
-            if (!components[i].has_question) return -1;
+            const PatternComponent& remaining = components[i];
+            // Only required components (non-question, non-empty backref) cause failure
+            if (!remaining.has_question && !(remaining.type == PatternComponent::BACKREFERENCE && state_in.group1_capture.empty())) {
+                 return -1;
+            }
         }
         return pos;
     }
@@ -53,13 +95,34 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
     
     if (current.type == PatternComponent::BACKREFERENCE) {
         const string& capture = state_in.group1_capture;
-        if (capture.empty() || pos + capture.length() > input.length() || input.substr(pos, capture.length()) != capture) {
+        if (capture.empty()) {
+            // Empty capture matches zero length, continue
+            return match_component_sequence(input, pos, components, comp_idx + 1, state_in);
+        }
+        
+        if (pos + capture.length() > input.length() || input.substr(pos, capture.length()) != capture) {
             return -1;
         }
         return match_component_sequence(input, pos + capture.length(), components, comp_idx + 1, state_in);
     } 
     
-    // Non-capture components (LITERAL, DIGIT, DOT, CLASS, WORD)
+    // --- FIX: Added handling for nested Alternation groups ---
+    if (current.type == PatternComponent::ALTERNATION) {
+        for (const auto& alternative : current.alternatives) {
+            // Match the current alternative components recursively
+            int end_alt_match = match_component_sequence(input, pos, alternative, 0, state_in);
+            
+            if (end_alt_match != -1) {
+                // If alternative matched, continue matching the rest of the main sequence
+                int result = match_component_sequence(input, end_alt_match, components, comp_idx + 1, state_in);
+                if (result != -1) return result;
+            }
+        }
+        return -1; // All alternatives failed
+    }
+
+    // --- Quantifier Logic (applies to simple character components) ---
+    
     if (current.has_plus) {
         if (!matches_component(input[pos], current)) {
             return -1;
@@ -168,6 +231,7 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
                 }
                 
                 // --- Group 1 Capture Logic ---
+                // Only the *first* ( ) group is Group 1
                 if (!group1_found) {
                     alt_component.is_group1_capture = true;
                     group1_found = true;
@@ -197,7 +261,7 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
                 i++; // Skip '1'
                 component_created = true;
             } else {
-                // Not a special escaped character, treat '\' as literal
+                // Not a special escaped character, treat as literal
                 component = PatternComponent(PatternComponent::LITERAL, string(1, pattern[i]));
                 component_created = true;
             }
@@ -243,112 +307,6 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
     return components;
 }
 
-// Check if a character matches a single pattern component
-bool matches_component(char c, const PatternComponent& component) {
-    switch (component.type) {
-        case PatternComponent::LITERAL:
-            return c == component.value[0];
-            
-        case PatternComponent::DIGIT:
-            return isdigit(c);
-            
-        case PatternComponent::WORD:
-            return isalnum(c) || c == '_';
-            
-        case PatternComponent::POSITIVE_CLASS:
-            for (char pattern_char : component.value) {
-                if (c == pattern_char) {
-                    return true;
-                }
-            }
-            return false;
-            
-        case PatternComponent::NEGATIVE_CLASS:
-            for (char pattern_char : component.value) {
-                if (c == pattern_char) {
-                    return false;
-                }
-            }
-            return true;
-            
-        case PatternComponent::DOT:
-            return true; // Dot matches any character
-            
-        case PatternComponent::ALTERNATION:
-        case PatternComponent::BACKREFERENCE: // Backreference is handled in match_at_position_advanced
-            return false; 
-    }
-    return false;
-}
-
-// Helper function to match alternatives within alternation groups
-// Signature updated to include MatchState& state
-bool match_alternatives_at_position(const string& input, int pos, const vector<PatternComponent>& alt_components, int alt_idx, const vector<PatternComponent>& main_components, int main_idx, bool must_reach_end, MatchState& state) {
-    if (alt_idx >= alt_components.size()) {
-        // Finished matching this alternative, continue with main pattern
-        // Pass the updated state (if any capture occurred)
-        return match_at_position_advanced(input, pos, main_components, main_idx, must_reach_end, state);
-    }
-    
-    if (pos >= input.length() && alt_idx < alt_components.size()) {
-        // Only components with '?' are optional if we ran out of input
-        for (int i = alt_idx; i < alt_components.size(); ++i) {
-            if (!alt_components[i].has_question) return false;
-        }
-        // If all remaining are optional, continue with main pattern
-        return match_at_position_advanced(input, pos, main_components, main_idx, must_reach_end, state);
-    }
-    
-    const PatternComponent& current = alt_components[alt_idx];
-    
-    if (current.has_plus) {
-        if (!matches_component(input[pos], current)) {
-            return false;
-        }
-        
-        // Try matching different numbers of repetitions (greedy approach)
-        for (int repeat_count = 1; pos + repeat_count <= input.length(); repeat_count++) {
-            bool all_match = true;
-            for (int j = 0; j < repeat_count; j++) {
-                if (!matches_component(input[pos + j], current)) {
-                    all_match = false;
-                    break;
-                }
-            }
-            
-            if (!all_match) {
-                // Try with one fewer repetition
-                // Must use a new state if sub-alternations were involved, but here we only match a char/class
-                return match_alternatives_at_position(input, pos + repeat_count - 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end, state);
-            }
-            
-            // Try to match the rest of the pattern after these repetitions
-            if (match_alternatives_at_position(input, pos + repeat_count, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end, state)) {
-                return true;
-            }
-        }
-        return false;
-    } else if (current.has_question) {
-        // Try matching zero times first (skip this component)
-        if (match_alternatives_at_position(input, pos, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end, state)) {
-            return true;
-        }
-        
-        // Try matching one time
-        if (matches_component(input[pos], current)) {
-            return match_alternatives_at_position(input, pos + 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end, state);
-        }
-        return false;
-    } else {
-        // Normal single character match
-        if (matches_component(input[pos], current)) {
-            return match_alternatives_at_position(input, pos + 1, alt_components, alt_idx + 1, main_components, main_idx, must_reach_end, state);
-        }
-        return false;
-    }
-}
-
-
 // Advanced pattern matching with quantifier and backreference support
 // Signature updated to include MatchState& state
 bool match_at_position_advanced(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, bool must_reach_end, MatchState& state) {
@@ -357,7 +315,7 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
     }
     
     if (pos >= input.length()) {
-        // Special case: if we ran out of input, check if remaining components are all optional or can match an empty string (like \1 if captured string is empty)
+        // Special case: if we ran out of input, check if remaining components are all optional
         for (int remaining_idx = comp_idx; remaining_idx < components.size(); remaining_idx++) {
             const PatternComponent& remaining = components[remaining_idx];
             if (!remaining.has_question) {
@@ -373,13 +331,11 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
     
     const PatternComponent& current = components[comp_idx];
     
-    // --- TASK 13: Handle Backreference \1 ---
     if (current.type == PatternComponent::BACKREFERENCE) {
         const string& capture = state.group1_capture;
         
         // Check for empty capture first (can match an empty string)
         if (capture.empty()) {
-            // Treat backreference to an empty group as optional
             return match_at_position_advanced(input, pos, components, comp_idx + 1, must_reach_end, state);
         }
         
@@ -397,12 +353,9 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
         for (const auto& alternative : current.alternatives) {
             
             // 1. Create a temporary MatchState for backtracking/failure.
-            //    If the recursive match fails, we discard any temporary capture.
             MatchState temp_state = state; 
             
-            // 2. We need to find out how far the successful match went.
-            //    We use the helper function `match_component_sequence` for this.
-            
+            // 2. Use the helper function `match_component_sequence` to find the span of the group match.
             int end_of_group_match = match_component_sequence(input, pos, alternative, 0, temp_state);
             
             if (end_of_group_match != -1) {
@@ -415,7 +368,6 @@ bool match_at_position_advanced(const string& input, int pos, const vector<Patte
                 // -----------------------------
 
                 // 3. Now try to match the rest of the main pattern starting from the new position.
-                //    We use the primary recursive function for the rest of the pattern components.
                 if (match_at_position_advanced(input, end_of_group_match, components, comp_idx + 1, must_reach_end, temp_state)) {
                     // Match succeeded all the way through! Commit the captured state.
                     state = temp_state;
