@@ -32,11 +32,9 @@ struct PatternComponent {
           capture_group_id(cg_id), backref_id(br_id) {}
 };
 
-// Forward declarations
-bool match_at_position_advanced(const string& input, int pos, const vector<struct PatternComponent>& components, int comp_idx, bool must_reach_end, MatchState& state);
-bool match_pattern(const string& input, const string& pattern); // Forward declaration added
-// NOTE: match_component_sequence now takes a mutable MatchState& to allow nested groups to capture.
+// Forward declaration of the core recursive matching function
 int match_component_sequence(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, MatchState& state);
+bool match_pattern(const string& input, const string& pattern); 
 
 // Check if a character matches a single pattern component
 bool matches_component(char c, const PatternComponent& component) {
@@ -76,16 +74,14 @@ bool matches_component(char c, const PatternComponent& component) {
     return false;
 }
 
-// Helper function to match a sequence of components and return the new position.
+// Core recursive engine: Tries to match a sequence of components starting at a position.
 // Returns the index in the input after the successful match, or -1 on failure.
-// NOTE: This helper is used to find the match position for a sub-sequence, and it
-// updates the MatchState for any nested groups (e.g., G2 inside G1) found.
 int match_component_sequence(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, MatchState& state) {
     if (comp_idx >= components.size()) {
         return pos; // Finished matching the sequence
     }
     
-    // If we run out of input, check if remaining required components can match
+    // If we run out of input, check if remaining required components can match (for zero-width matches)
     if (pos >= input.length()) {
         for (int i = comp_idx; i < components.size(); ++i) {
             const PatternComponent& remaining = components[i];
@@ -118,8 +114,7 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
     } 
     
     if (current.type == PatternComponent::ALTERNATION) {
-        // This is a nested capturing group. It must calculate its match span,
-        // capture its content, and update the state before continuing.
+        // This is a capturing group (or an alternation group). 
         
         for (const auto& alternative : current.alternatives) {
             int start_pos = pos;
@@ -200,8 +195,9 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
         
         return -1;
     } else {
-        // Normal single character match
+        // Normal single character match (no quantifier, no group, no backreference)
         if (matches_component(input[pos], current)) {
+            // No need for temp state as it doesn't capture, but we still recurse
             return match_component_sequence(input, pos + 1, components, comp_idx + 1, state);
         }
         return -1;
@@ -350,128 +346,6 @@ vector<PatternComponent> parse_pattern(const string& pattern) {
 }
 
 
-// Advanced pattern matching with quantifier and backreference support
-bool match_at_position_advanced(const string& input, int pos, const vector<PatternComponent>& components, int comp_idx, bool must_reach_end, MatchState& state) {
-    if (comp_idx >= components.size()) {
-        return !must_reach_end || pos == input.length(); 
-    }
-    
-    if (pos >= input.length()) {
-        // Special case: if we ran out of input, check if remaining components are all optional
-        for (int remaining_idx = comp_idx; remaining_idx < components.size(); remaining_idx++) {
-            const PatternComponent& remaining = components[remaining_idx];
-            
-            // Required component if non-question and not an empty backref
-            if (!remaining.has_question) {
-                if (remaining.type != PatternComponent::BACKREFERENCE || state.captures.count(remaining.backref_id) == 0 || state.captures.at(remaining.backref_id).empty()) {
-                    return false; 
-                }
-            }
-        }
-        return true; 
-    }
-    
-    const PatternComponent& current = components[comp_idx];
-    
-    if (current.type == PatternComponent::BACKREFERENCE) {
-        // Retrieve capture. If not found, it's considered an empty match.
-        const string capture = (state.captures.count(current.backref_id)) ? state.captures.at(current.backref_id) : "";
-        
-        if (capture.empty()) {
-            // Empty capture matches zero length, continue
-            return match_at_position_advanced(input, pos, components, comp_idx + 1, must_reach_end, state);
-        }
-        
-        // Check if the captured string matches the input at the current position
-        if (pos + capture.length() <= input.length() && input.substr(pos, capture.length()) == capture) {
-            // Match successful, move past the capture
-            return match_at_position_advanced(input, pos + capture.length(), components, comp_idx + 1, must_reach_end, state);
-        }
-        
-        return false;
-        
-    } else if (current.type == PatternComponent::ALTERNATION) {
-        
-        // Try each alternative
-        for (const auto& alternative : current.alternatives) {
-            
-            // 1. Create a temporary MatchState for backtracking/failure.
-            MatchState temp_state = state; 
-            
-            // 2. Use the helper function `match_component_sequence` to find the span of the group match.
-            // This call now updates temp_state with any nested captures (like G2).
-            int end_of_group_match = match_component_sequence(input, pos, alternative, 0, temp_state); 
-            
-            if (end_of_group_match != -1) {
-                // The alternative matched up to `end_of_group_match`.
-                
-                // --- Capture Logic: Store the matched content in the state (for the top-level group, G1) ---
-                if (current.capture_group_id > 0) {
-                    temp_state.captures[current.capture_group_id] = input.substr(pos, end_of_group_match - pos);
-                }
-                // -----------------------------------------------------------
-
-                // 3. Now try to match the rest of the main pattern starting from the new position.
-                // We pass `temp_state` and update the original `state` on success.
-                if (match_at_position_advanced(input, end_of_group_match, components, comp_idx + 1, must_reach_end, temp_state)) {
-                    // Match succeeded all the way through! Commit the captured state.
-                    state = temp_state;
-                    return true;
-                }
-            }
-            // If it failed, loop continues to the next alternative with the original 'state'.
-        }
-        return false;
-        
-    } else if (current.has_plus) {
-        // Must match at least once.
-        if (pos >= input.length() || !matches_component(input[pos], current)) {
-            return false;
-        }
-        
-        // 1. Find the maximum possible match length (greedy).
-        int max_match_len = 0;
-        while (pos + max_match_len < input.length() && matches_component(input[pos + max_match_len], current)) {
-            max_match_len++;
-        }
-        
-        // 2. Backtrack loop: Try matching the rest of the pattern from longest match down to 1.
-        for (int len = max_match_len; len >= 1; len--) {
-            // Create a temporary state for the recursive call to maintain consistency
-            MatchState temp_state = state; 
-
-            if (match_at_position_advanced(input, pos + len, components, comp_idx + 1, must_reach_end, temp_state)) {
-                // If the rest of the pattern matches, commit the state and return true.
-                state = temp_state;
-                return true;
-            }
-        }
-        
-        return false; // No repetition count worked
-
-    } else if (current.has_question) {
-        // Can match zero or one time
-        // Try matching zero times first (skip this component)
-        if (match_at_position_advanced(input, pos, components, comp_idx + 1, must_reach_end, state)) {
-            return true;
-        }
-        
-        // Try matching one time
-        if (matches_component(input[pos], current)) {
-            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1, must_reach_end, state);
-        }
-        
-        return false;
-        
-    } else {
-        // Normal single character match (no quantifier, no backreference, no group)
-        if (matches_component(input[pos], current)) {
-            return match_at_position_advanced(input, pos + 1, components, comp_idx + 1, must_reach_end, state);
-        }
-        return false;
-    }
-}
-
 // High-level pattern matching function to be called from main
 bool match_pattern(const string& input, const string& pattern) {
     // 1. Parse the entire pattern
@@ -516,9 +390,15 @@ bool match_pattern(const string& input, const string& pattern) {
     // Try matching at every possible start position
     for (int i = start_search_pos; i <= end_search_pos; ++i) {
         MatchState state;
-        // The `must_reach_end` flag is set to true only if '$' was present.
-        if (match_at_position_advanced(input, i, effective_components, 0, ends_with_anchor, state)) {
-            return true;
+        
+        // Use the core sequence matcher to find the end position of the match
+        int end_match_pos = match_component_sequence(input, i, effective_components, 0, state);
+        
+        if (end_match_pos != -1) {
+            // Check the END_ANCHOR requirement: match must reach the end of the input string
+            if (!ends_with_anchor || end_match_pos == input.length()) {
+                return true;
+            }
         }
     }
 
