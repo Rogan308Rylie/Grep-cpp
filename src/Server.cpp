@@ -124,32 +124,26 @@ int match_component_sequence(const string& input, int pos, const vector<PatternC
     // --- Quantifier Logic (applies to simple character components) ---
     
     if (current.has_plus) {
-        if (!matches_component(input[pos], current)) {
+        // Must match at least once.
+        if (pos >= input.length() || !matches_component(input[pos], current)) {
             return -1;
         }
         
-        // Greedy match: try to match as many as possible
-        for (int repeat_count = 1; pos + repeat_count <= input.length(); repeat_count++) {
-            bool all_match = true;
-            for (int j = 0; j < repeat_count; j++) {
-                if (!matches_component(input[pos + j], current)) {
-                    all_match = false;
-                    break;
-                }
-            }
-            
-            if (!all_match) {
-                // Try matching the rest of the pattern after one less repetition
-                int result = match_component_sequence(input, pos + repeat_count - 1, components, comp_idx + 1, state_in);
-                if (result != -1) return result;
-                return -1; // Backtrack failure
-            }
-            
-            // Try matching the rest of the pattern after these repetitions
-            int result = match_component_sequence(input, pos + repeat_count, components, comp_idx + 1, state_in);
-            if (result != -1) return result;
+        // 1. Find the maximum possible match length (greedy).
+        int max_match_len = 0;
+        while (pos + max_match_len < input.length() && matches_component(input[pos + max_match_len], current)) {
+            max_match_len++;
         }
-        return -1;
+        
+        // 2. Backtrack loop: Try matching the rest of the pattern from longest match down to 1.
+        for (int len = max_match_len; len >= 1; len--) {
+            // Match the rest of the sequence (comp_idx + 1) starting after the match of length 'len'.
+            int result = match_component_sequence(input, pos + len, components, comp_idx + 1, state_in);
+            if (result != -1) {
+                return result; // Success!
+            }
+        }
+        return -1; // No repetition count worked
         
     } else if (current.has_question) {
         // Try matching zero times first (skip this component)
