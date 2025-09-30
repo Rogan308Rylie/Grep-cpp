@@ -259,18 +259,19 @@ vector<PatternComponent> parse_pattern_segment(const string& pattern, int& group
                 }
                 alt_strings.push_back(current_alt);
                 
-                // Parse each alternative recursively, updating group_counter
+                // --- Capture Group Logic: Assign ID first (Pre-order assignment) ---
+                // Groups are numbered by the order of their opening parenthesis.
+                group_counter++;
                 PatternComponent alt_component(PatternComponent::ALTERNATION);
+                alt_component.capture_group_id = group_counter;
+                // -------------------------------------------------------------------
+
+                // Parse each alternative recursively, updating group_counter
                 for (const string& alt : alt_strings) {
                     // *** RECURSIVE CALL HERE ***
                     vector<PatternComponent> alt_pattern = parse_pattern_segment(alt, group_counter);
                     alt_component.alternatives.push_back(alt_pattern);
                 }
-                
-                // --- Capture Group Logic ---
-                group_counter++;
-                alt_component.capture_group_id = group_counter;
-                // ---------------------------
                 
                 component = alt_component;
                 component_created = true;
